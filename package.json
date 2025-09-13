@@ -8,10 +8,12 @@
     "start": "next start"
   },
   "dependencies": {
+    "@prisma/client": "^6.16.1",
     "@tailwindcss/postcss": "^4.1.11",
     "framer-motion": "^12.23.12",
     "next": "^14.2.31",
     "openai": "^5.15.0",
+    "prisma": "^6.16.1",
     "react": "18.2.0",
     "react-dom": "18.2.0"
   },

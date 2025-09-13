@@ -16,6 +16,8 @@ export default function Home() {
   const [loading, setLoading] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
   const[darkMode, setDarkMode] = useState(false);
+  const [currentQuiz, setCurrentQuiz] = useState<{ question: string; answer: string } | null>(null);
+
 
   // 自動スクロール
   useEffect(() => {
@@ -31,48 +33,108 @@ export default function Home() {
     }
   }, [darkMode]);
 
+  // メッセージ送信
   const sendMessage = async () => {
-    if (!input.trim()) return;    
-    setLoading(true);
-    // モード切替コマンド
-    if (input === "/quiz") {
-    setMode("quiz");
-    setMessages((prev) => [
-      ...prev,
-      { id: Date.now(), role: "assistant", content: "英単語クイズモードを開始します！ 日本語が出題されるので、英語で答えてください。" },
-    ]);
-    setInput("");
-    return;
-    }
-    const newMessage: Message = {
+    if (!input.trim()) return;
+
+    const userMessage: Message = {
       id: Date.now(),
       role: "user",
       content: input,
     };
-    const updatedMessages = [...messages, newMessage];
-    setMessages(updatedMessages);
+
+    setMessages((prev) => [...prev, userMessage]);
     setInput("");
+    setLoading(true);
 
     try {
-      const res = await fetch("/api/chat", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ messages: updatedMessages }),
-      });
+      // モード切替コマンド
+      if(input === "/quiz") { setMode("quiz"); }
+      if(input === "/chat") { setMode("chat"); }
+      // ====== クイズモードの処理 ======
+      if (mode === "quiz") {
+        if (currentQuiz === null) {
+          // ====== 出題フェーズ ======
+          const res = await fetch("/api/chat", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ mode: "quiz" }),
+          });
 
-      if (!res.ok) throw new Error(`API error: ${res.status}`);
+          const data = await res.json();
+          const quiz = JSON.parse(data.quiz); // { question, answer }
 
-      const data = await res.json();
+          // フロントに保持
+          setCurrentQuiz(quiz);
 
+          // 出題メッセージ
+          setMessages((prev) => [
+            ...prev,
+            {
+              id: Date.now() + 1,
+              role: "assistant",
+              content: `問題: 「${quiz.question}」を英語で？`,
+            },
+          ]);
+        } else {
+          // ====== 回答フェーズ ======
+          const isCorrect = input.trim().toLowerCase() === currentQuiz.answer.toLowerCase();
+
+          // DB保存
+          await fetch("/api/log", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              question: currentQuiz.question,
+              answer: currentQuiz.answer,
+              userInput: input,
+              correct: isCorrect,
+            }),
+          });
+
+          // フィードバック表示
+          setMessages((prev) => [
+            ...prev,
+            {
+              id: Date.now() + 2,
+              role: "assistant",
+              content: isCorrect
+                ? `正解！「${currentQuiz.answer}」です。`
+                : `不正解。「${currentQuiz.answer}」が正しい答えです。`,
+            },
+          ]);
+
+          // 次の問題を出す準備（stateをリセット）
+          setCurrentQuiz(null);
+        }
+      } else if (mode === "chat") {
+        // ====== 通常チャット ======
+        const res = await fetch("/api/chat", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            messages: [...messages, userMessage],
+            mode: "chat",
+          }),
+        });
+
+        const data = await res.json();
+        if (data.reply) {
+          setMessages((prev) => [
+            ...prev,
+            { id: Date.now() + 1, role: "assistant", content: data.reply },
+          ]);
+        }
+      }
+    } catch (error) {
+      console.error(error);
       setMessages((prev) => [
         ...prev,
-        { id: Date.now(), role: "assistant", content: data.reply },
-      ]);
-    } catch (err) {
-      console.error(err);
-      setMessages((prev) => [
-        ...prev,
-        { id: Date.now(), role: "assistant", content: "エラーが発生しました。" },
+        {
+          id: Date.now() + 999,
+          role: "assistant",
+          content: "エラーが発生しました。",
+        },
       ]);
     } finally {
       setLoading(false);
@@ -131,6 +193,7 @@ export default function Home() {
       </div>
 
       {/* 入力フォーム */}
+      {mode === "chat" ? (
       <div className="p-4 bg-white border-t flex gap-2 dark:bg-gray-900">
         <input
           type="text"
@@ -148,6 +211,24 @@ export default function Home() {
           送信
         </button>
       </div>
+      ) : (
+      <div className="p-4 bg-white border-t flex gap-2 dark:bg-gray-900">
+        <input
+          type="text"
+          className="flex-1 border rounded-lg px-3 py-3 text-base focus:outline-none focus:ring-2 focus:ring-blue-400 dark:bg-white"
+          value={input}
+          onChange={(e) => setInput(e.target.value)}
+          onKeyDown={(e) => e.key === "Enter" && sendMessage()}
+          placeholder="英単語で答えてね"
+        />
+        <button onClick={sendMessage}
+        disabled={loading}
+          className="bg-blue-500 text-white px-4 py-2 rounded disabled:opacity-50"
+          >
+            回答
+        </button>
+      </div>
+      )}
     </main>
   );
 }
