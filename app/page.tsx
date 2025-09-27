@@ -17,6 +17,7 @@ export default function Home() {
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
   const[darkMode, setDarkMode] = useState(false);
   const [currentQuiz, setCurrentQuiz] = useState<{ question: string; answer: string } | null>(null);
+  const [quizHistory, setQuizHistory] = useState<{ question: string; answer: string }[]>([]);
 
 
   // 自動スクロール
@@ -33,9 +34,111 @@ export default function Home() {
     }
   }, [darkMode]);
 
+  // クイズ履歴を取得
+  const fetchQuizHistory = async () => {
+    try {
+      const res = await fetch("/api/quiz-history");
+      const data = await res.json();
+      setQuizHistory(data.history || []);
+    } catch (error) {
+      console.error("クイズ履歴の取得に失敗:", error);
+    }
+  };
+
+  // クイズ問題生成
+  const generateQuiz = async () => {
+    setLoading(true);
+    try {
+      // まずクイズ履歴を取得
+      await fetchQuizHistory();
+      
+      const res = await fetch("/api/chat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ mode: "quiz" }),
+      });
+
+      const data = await res.json();
+      const quiz = JSON.parse(data.quiz); // { question, answer }
+
+      // 重複チェック（念のため）
+      const isDuplicate = quizHistory.some(
+        (q) => q.question === quiz.question && q.answer === quiz.answer
+      );
+
+      if (isDuplicate) {
+        // 重複している場合は再生成
+        console.log("重複問題を検出、再生成します");
+        return await generateQuiz();
+      }
+
+      // フロントに保持
+      setCurrentQuiz(quiz);
+
+      // 出題メッセージ
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: Date.now() + 1,
+          role: "assistant",
+          content: `問題: 「${quiz.question}」を英語で？`,
+        },
+      ]);
+    } catch (error) {
+      console.error(error);
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: Date.now() + 999,
+          role: "assistant",
+          content: "問題の生成に失敗しました。",
+        },
+      ]);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // モード切替処理
+  const handleModeSwitch = async (command: string) => {
+    if (command === "/quiz") {
+      setMode("quiz");
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: Date.now(),
+          role: "assistant",
+          content: "クイズモードに切り替えました。問題を出しますね！",
+        },
+      ]);
+      setInput("");
+      // 即座に問題を生成
+      await generateQuiz();
+      return true;
+    } else if (command === "/chat") {
+      setMode("chat");
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: Date.now(),
+          role: "assistant",
+          content: "チャットモードに切り替えました。何でもお聞きください！",
+        },
+      ]);
+      setInput("");
+      return true;
+    }
+    return false;
+  };
+
   // メッセージ送信
   const sendMessage = async () => {
     if (!input.trim()) return;
+
+    // モード切替コマンドのチェック
+    if (await handleModeSwitch(input)) {
+      return;
+    }
 
     const userMessage: Message = {
       id: Date.now(),
@@ -48,34 +151,11 @@ export default function Home() {
     setLoading(true);
 
     try {
-      // モード切替コマンド
-      if(input === "/quiz") { setMode("quiz"); }
-      if(input === "/chat") { setMode("chat"); }
       // ====== クイズモードの処理 ======
       if (mode === "quiz") {
         if (currentQuiz === null) {
           // ====== 出題フェーズ ======
-          const res = await fetch("/api/chat", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ mode: "quiz" }),
-          });
-
-          const data = await res.json();
-          const quiz = JSON.parse(data.quiz); // { question, answer }
-
-          // フロントに保持
-          setCurrentQuiz(quiz);
-
-          // 出題メッセージ
-          setMessages((prev) => [
-            ...prev,
-            {
-              id: Date.now() + 1,
-              role: "assistant",
-              content: `問題: 「${quiz.question}」を英語で？`,
-            },
-          ]);
+          await generateQuiz();
         } else {
           // ====== 回答フェーズ ======
           const isCorrect = input.trim().toLowerCase() === currentQuiz.answer.toLowerCase();
@@ -106,6 +186,11 @@ export default function Home() {
 
           // 次の問題を出す準備（stateをリセット）
           setCurrentQuiz(null);
+          
+          // 少し待ってから次の問題を出題
+          setTimeout(async () => {
+            await generateQuiz();
+          }, 1500);
         }
       } else if (mode === "chat") {
         // ====== 通常チャット ======

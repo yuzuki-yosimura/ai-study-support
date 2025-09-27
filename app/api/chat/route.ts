@@ -1,4 +1,7 @@
 import { NextResponse } from "next/server";
+import { PrismaClient } from '@prisma/client';
+
+const prisma = new PrismaClient();
 
 export async function POST(req: Request) {
   try {
@@ -9,7 +12,29 @@ export async function POST(req: Request) {
     let promptMessages;
 
     if (mode === "quiz") {
-      // 🔹 クイズモード: JSON形式で返すように指定
+      // 🔹 クイズモード: 過去の問題を取得して除外
+      let excludePrompt = "";
+      
+      try {
+        const quizHistory = await prisma.quizLog.findMany({
+          select: {
+            question: true,
+            answer: true,
+          },
+          distinct: ['question', 'answer'],
+        });
+
+        if (quizHistory.length > 0) {
+          const historyText = quizHistory
+            .map(q => `「${q.question}」→「${q.answer}」`)
+            .join('、');
+          excludePrompt = `\n\n以下の問題は既に出題済みなので避けてください: ${historyText}`;
+        }
+      } catch (error) {
+        console.error('Error fetching quiz history:', error);
+        // エラーが発生しても続行
+      }
+
       promptMessages = [
         {
           role: "system",
@@ -19,7 +44,7 @@ export async function POST(req: Request) {
           role: "user",
           content: `中学レベルの英単語クイズを1問作ってください。
 日本語の意味と正解の英単語を次の形式で返してください:
-{"question": "日本語の意味", "answer": "英単語"}`
+{"question": "日本語の意味", "answer": "英単語"}${excludePrompt}`
         },
       ];
     } else {
