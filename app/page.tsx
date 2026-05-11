@@ -9,6 +9,8 @@ type Message = {
   content: string;
 };
 
+const QUIZ_ROUNDS = 5;
+
 export default function Home() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
@@ -18,7 +20,15 @@ export default function Home() {
   const[darkMode, setDarkMode] = useState(false);
   const [currentQuiz, setCurrentQuiz] = useState<{ question: string; answer: string } | null>(null);
   const [quizHistory, setQuizHistory] = useState<{ question: string; answer: string }[]>([]);
-
+  const [apiNotice, setApiNotice] = useState<string | null>(null);
+  /** 今回の /quiz セッションで答えた問数（0〜QUIZ_ROUNDS） */
+  const [quizAnsweredCount, setQuizAnsweredCount] = useState(0);
+  /** 今回のセッションでの正解数 */
+  const [quizCorrectCount, setQuizCorrectCount] = useState(0);
+  /** 5問目終了後、結果表示までの間に追加出題しない */
+  const [quizFinishing, setQuizFinishing] = useState(false);
+  /** /db セッションでは API に quizFromDb を送る（再レンダー前でも参照できるよう ref） */
+  const quizFromDbOnlyRef = useRef(false);
 
   // 自動スクロール
   useEffect(() => {
@@ -45,37 +55,90 @@ export default function Home() {
     }
   };
 
-  // クイズ問題生成
-  const generateQuiz = async () => {
+  // クイズ問題生成（再帰は最大回数で打ち切り）
+  const generateQuiz = async (attempt = 0): Promise<void> => {
+    if (attempt > 12) {
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: Date.now() + 998,
+          role: "assistant",
+          content: "問題の生成に繰り返し失敗しました。しばらくしてからもう一度お試しください。",
+        },
+      ]);
+      return;
+    }
+
     setLoading(true);
     try {
-      // まずクイズ履歴を取得
       await fetchQuizHistory();
-      
+
       const res = await fetch("/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ mode: "quiz" }),
+        body: JSON.stringify({
+          mode: "quiz",
+          ...(quizFromDbOnlyRef.current ? { quizFromDb: true } : {}),
+        }),
       });
 
       const data = await res.json();
-      const quiz = JSON.parse(data.quiz); // { question, answer }
 
-      // 重複チェック（念のため）
+      if (typeof data.notice === "string" && data.notice.trim()) {
+        setApiNotice(data.notice.trim());
+      }
+
+      if (!res.ok || data.error) {
+        const msg =
+          typeof data.error === "string"
+            ? data.error
+            : "問題の取得に失敗しました。";
+        setMessages((prev) => [
+          ...prev,
+          { id: Date.now() + 997, role: "assistant", content: msg },
+        ]);
+        return;
+      }
+
+      if (typeof data.quiz !== "string") {
+        setMessages((prev) => [
+          ...prev,
+          {
+            id: Date.now() + 996,
+            role: "assistant",
+            content: "問題データの形式が不正です。",
+          },
+        ]);
+        return;
+      }
+
+      let quiz: { question: string; answer: string };
+      try {
+        quiz = JSON.parse(data.quiz);
+      } catch {
+        setMessages((prev) => [
+          ...prev,
+          {
+            id: Date.now() + 995,
+            role: "assistant",
+            content: "問題の解析に失敗しました。",
+          },
+        ]);
+        return;
+      }
+
       const isDuplicate = quizHistory.some(
         (q) => q.question === quiz.question && q.answer === quiz.answer
       );
 
       if (isDuplicate) {
-        // 重複している場合は再生成
         console.log("重複問題を検出、再生成します");
-        return await generateQuiz();
+        return await generateQuiz(attempt + 1);
       }
 
-      // フロントに保持
+
       setCurrentQuiz(quiz);
 
-      // 出題メッセージ
       setMessages((prev) => [
         ...prev,
         {
@@ -102,20 +165,45 @@ export default function Home() {
   // モード切替処理
   const handleModeSwitch = async (command: string) => {
     if (command === "/quiz") {
+      quizFromDbOnlyRef.current = false;
       setMode("quiz");
+      setQuizAnsweredCount(0);
+      setQuizCorrectCount(0);
+      setQuizFinishing(false);
+      setCurrentQuiz(null);
       setMessages((prev) => [
         ...prev,
         {
           id: Date.now(),
           role: "assistant",
-          content: "クイズモードに切り替えました。問題を出しますね！",
+          content: `クイズモードに切り替えました（Groq 優先）。${QUIZ_ROUNDS}問出題します！`,
         },
       ]);
       setInput("");
-      // 即座に問題を生成
       await generateQuiz();
       return true;
-    } else if (command === "/chat") {
+    }
+    if (command === "/db") {
+      quizFromDbOnlyRef.current = true;
+      setMode("quiz");
+      setQuizAnsweredCount(0);
+      setQuizCorrectCount(0);
+      setQuizFinishing(false);
+      setCurrentQuiz(null);
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: Date.now(),
+          role: "assistant",
+          content: `データベース出題モードです（全${QUIZ_ROUNDS}問）。登録済みの問題だけから出します。`,
+        },
+      ]);
+      setInput("");
+      await generateQuiz();
+      return true;
+    }
+    if (command === "/chat") {
+      quizFromDbOnlyRef.current = false;
       setMode("chat");
       setMessages((prev) => [
         ...prev,
@@ -153,12 +241,17 @@ export default function Home() {
     try {
       // ====== クイズモードの処理 ======
       if (mode === "quiz") {
+        if (quizFinishing) {
+          return;
+        }
         if (currentQuiz === null) {
           // ====== 出題フェーズ ======
           await generateQuiz();
         } else {
           // ====== 回答フェーズ ======
           const isCorrect = input.trim().toLowerCase() === currentQuiz.answer.toLowerCase();
+          const nextAnswered = quizAnsweredCount + 1;
+          const nextCorrect = quizCorrectCount + (isCorrect ? 1 : 0);
 
           // DB保存
           await fetch("/api/log", {
@@ -167,7 +260,6 @@ export default function Home() {
             body: JSON.stringify({
               question: currentQuiz.question,
               answer: currentQuiz.answer,
-              userInput: input,
               correct: isCorrect,
             }),
           });
@@ -184,13 +276,32 @@ export default function Home() {
             },
           ]);
 
-          // 次の問題を出す準備（stateをリセット）
           setCurrentQuiz(null);
-          
-          // 少し待ってから次の問題を出題
-          setTimeout(async () => {
-            await generateQuiz();
-          }, 1500);
+
+          if (nextAnswered >= QUIZ_ROUNDS) {
+            setQuizFinishing(true);
+            const pct = Math.round((nextCorrect / QUIZ_ROUNDS) * 100);
+            setTimeout(() => {
+              setMessages((prev) => [
+                ...prev,
+                {
+                  id: Date.now() + 3,
+                  role: "assistant",
+                  content: `クイズ終了です。お疲れさまでした。\n${QUIZ_ROUNDS}問中 ${nextCorrect} 問正解（正答率 ${pct}%）\n\nもう一度（Groq 優先）なら「/quiz」、DB のみなら「/db」、チャットに戻るときは「/chat」と入力してください。`,
+                },
+              ]);
+              setMode("chat");
+              setQuizAnsweredCount(0);
+              setQuizCorrectCount(0);
+              setQuizFinishing(false);
+            }, 1500);
+          } else {
+            setQuizAnsweredCount(nextAnswered);
+            setQuizCorrectCount(nextCorrect);
+            setTimeout(async () => {
+              await generateQuiz();
+            }, 1500);
+          }
         }
       } else if (mode === "chat") {
         // ====== 通常チャット ======
@@ -204,10 +315,22 @@ export default function Home() {
         });
 
         const data = await res.json();
+
+        if (typeof data.notice === "string" && data.notice.trim()) {
+          setApiNotice(data.notice.trim());
+        }
+
         if (data.reply) {
           setMessages((prev) => [
             ...prev,
             { id: Date.now() + 1, role: "assistant", content: data.reply },
+          ]);
+        } else if (data.error) {
+          const errText =
+            typeof data.error === "string" ? data.error : "チャットに失敗しました。";
+          setMessages((prev) => [
+            ...prev,
+            { id: Date.now() + 1, role: "assistant", content: errText },
           ]);
         }
       }
@@ -236,6 +359,22 @@ export default function Home() {
           {darkMode ? "ライトモード" : "ダークモード"}
         </button>
       </div>
+      {apiNotice && (
+        <div
+          className="flex items-center justify-between gap-2 px-3 py-2 text-sm bg-amber-100 text-amber-950 border-b border-amber-200 dark:bg-amber-950/40 dark:text-amber-50 dark:border-amber-800"
+          role="status"
+        >
+          <span className="flex-1">{apiNotice}</span>
+          <button
+            type="button"
+            onClick={() => setApiNotice(null)}
+            className="shrink-0 rounded px-2 py-0.5 text-amber-900 hover:bg-amber-200/80 dark:text-amber-100 dark:hover:bg-amber-900/60"
+            aria-label="通知を閉じる"
+          >
+            ×
+          </button>
+        </div>
+      )}
       {/* チャット履歴 */}
       <div className="flex-1 overflow-y-auto p-4 space-y-2 bg-gray-100 dark:bg-gray-900">
         <AnimatePresence>
@@ -304,10 +443,15 @@ export default function Home() {
           value={input}
           onChange={(e) => setInput(e.target.value)}
           onKeyDown={(e) => e.key === "Enter" && sendMessage()}
-          placeholder="英単語で答えてね"
+          placeholder={
+            quizFinishing
+              ? "結果を表示しています…"
+              : `第 ${quizAnsweredCount + 1} / ${QUIZ_ROUNDS} 問 — ${quizFromDbOnlyRef.current ? "DB出題 — " : ""}英単語で答えてね`
+          }
+          disabled={quizFinishing}
         />
         <button onClick={sendMessage}
-        disabled={loading}
+        disabled={loading || quizFinishing}
           className="bg-blue-500 text-white px-4 py-2 rounded disabled:opacity-50"
           >
             回答

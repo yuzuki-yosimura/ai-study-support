@@ -19,3 +19,7 @@ yarn-error.log*
 Thumbs.db
 .vscode/
 /app/generated/prisma
+
+# Local SQLite (DATABASE_URL の file: パスに合わせる)
+/prisma/dev.db
+/prisma/dev.db-journal

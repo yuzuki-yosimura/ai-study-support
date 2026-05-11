@@ -1,0 +1,24 @@
+services:
+  app:
+    image: node:20-bookworm-slim
+    working_dir: /app
+    ports:
+      - "3000:3000"
+    env_file:
+      - .env
+    environment:
+      # コンテナ越しのファイル監視が不安な環境向け（macOS の Docker Desktop でも有効なことがある）
+      WATCHPACK_POLLING: "true"
+    volumes:
+      - .:/app
+      - node_modules:/app/node_modules
+    command: >
+      sh -c "
+      npm install &&
+      npm run db:migrate &&
+      npm run db:seed &&
+      npm run dev:docker
+      "
+
+volumes:
+  node_modules:

@@ -1,0 +1,7 @@
+{
+  "name": "ai-study-support",
+  "dockerComposeFile": "../docker-compose.yml",
+  "service": "app",
+  "workspaceFolder": "/app",
+  "forwardPorts": [3000]
+}

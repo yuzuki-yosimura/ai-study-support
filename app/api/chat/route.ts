@@ -1,79 +1,169 @@
 import { NextResponse } from "next/server";
-import { PrismaClient } from '@prisma/client';
+import { PrismaClient } from "@prisma/client";
+import { postGroqChatCompletions } from "@/lib/llm/groq";
+import {
+  parseQuizJson,
+  pickQuizQuestionFromDb,
+  type QuizPair,
+} from "@/lib/quiz/fallback";
 
 const prisma = new PrismaClient();
+
+const NOTICE_DB_FALLBACK =
+  "APIの利用制限または応答形式の都合により、登録済みの問題から出題しています。";
+
+const NOTICE_DB_ONLY =
+  "登録済みデータベースから出題しています（/db モード）。";
+
+const NOTICE_CHAT_DEGRADED =
+  "AIチャットは現在利用できません（利用枠の上限など）。クイズは引き続き利用できます。";
+
+const CHAT_STATIC_REPLY =
+  "現在、AIチャットは一時的に利用できません（利用枠の上限など）。英単語クイズは「/quiz」（Groq 優先）または「/db」（DB のみ）でお使いいただけます。";
+
+function toGroqMessages(
+  rows: { role: string; content: string }[]
+): { role: string; content: string }[] {
+  return rows
+    .filter((m) => (m.role === "user" || m.role === "assistant") && m.content)
+    .map((m) => ({ role: m.role, content: String(m.content) }));
+}
+
+async function loadDistinctQuizPairs(): Promise<QuizPair[]> {
+  return prisma.quizLog.findMany({
+    select: { question: true, answer: true },
+    distinct: ["question", "answer"],
+  });
+}
 
 export async function POST(req: Request) {
   try {
     const body = await req.json();
-    const { messages, mode } = body; 
-    // mode: "chat" | "quiz"
-
-    let promptMessages;
+    const { messages, mode, quizFromDb } = body as {
+      messages?: unknown;
+      mode?: string;
+      quizFromDb?: boolean;
+    };
 
     if (mode === "quiz") {
-      // 🔹 クイズモード: 過去の問題を取得して除外
       let excludePrompt = "";
-      
-      try {
-        const quizHistory = await prisma.quizLog.findMany({
-          select: {
-            question: true,
-            answer: true,
-          },
-          distinct: ['question', 'answer'],
-        });
+      let historyPairs: QuizPair[] = [];
 
-        if (quizHistory.length > 0) {
-          const historyText = quizHistory
-            .map(q => `「${q.question}」→「${q.answer}」`)
-            .join('、');
+      try {
+        historyPairs = await loadDistinctQuizPairs();
+        if (historyPairs.length > 0) {
+          const historyText = historyPairs
+            .map((q) => `「${q.question}」→「${q.answer}」`)
+            .join("、");
           excludePrompt = `\n\n以下の問題は既に出題済みなので避けてください: ${historyText}`;
         }
       } catch (error) {
-        console.error('Error fetching quiz history:', error);
-        // エラーが発生しても続行
+        console.error("Error fetching quiz history:", error);
       }
 
-      promptMessages = [
+      if (quizFromDb === true) {
+        const fromDbOnly = await pickQuizQuestionFromDb(prisma, historyPairs);
+        if (fromDbOnly) {
+          return NextResponse.json({
+            quiz: JSON.stringify(fromDbOnly),
+            source: "db",
+            notice: NOTICE_DB_ONLY,
+          });
+        }
+        return NextResponse.json(
+          {
+            error:
+              "データベースに出題できる問題がありません。npm run db:seed を実行してください。",
+          },
+          { status: 503 }
+        );
+      }
+
+      const promptMessages = [
         {
           role: "system",
-          content: "あなたは英語学習の先生です。必ずJSONのみを返してください。",
+          content:
+            "あなたは英語学習の先生です。必ずJSONのみを返してください。",
         },
         {
           role: "user",
           content: `中学レベルの英単語クイズを1問作ってください。
 日本語の意味と正解の英単語を次の形式で返してください:
-{"question": "日本語の意味", "answer": "英単語"}${excludePrompt}`
+{"question": "日本語の意味", "answer": "英単語"}${excludePrompt}`,
         },
       ];
-    } else {
-      // 🔹 通常チャットモード
-      promptMessages = messages;
+
+      const groq = await postGroqChatCompletions(promptMessages);
+
+      if (groq.ok && groq.content) {
+        const parsed = parseQuizJson(groq.content);
+        if (parsed) {
+          return NextResponse.json({
+            quiz: JSON.stringify(parsed),
+            source: "groq",
+          });
+        }
+      } else {
+        console.error("Groq quiz failure:", groq.status, groq.errorBody);
+      }
+
+      const fromDb = await pickQuizQuestionFromDb(prisma, historyPairs);
+      if (fromDb) {
+        return NextResponse.json({
+          quiz: JSON.stringify(fromDb),
+          source: "db",
+          notice: NOTICE_DB_FALLBACK,
+        });
+      }
+
+      return NextResponse.json(
+        {
+          error:
+            "問題を生成できませんでした。GROQ_API_KEY とデータベースのシード（npm run db:seed）を確認してください。",
+        },
+        { status: 503 }
+      );
     }
 
-    const res = await fetch("https://api.openai.com/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
-      },
-      body: JSON.stringify({
-        model: "gpt-4o-mini", // モデルは調整可
-        messages: promptMessages,
-      }),
-    });
+    if (mode === "chat") {
+      if (!Array.isArray(messages)) {
+        return NextResponse.json(
+          { error: "messages が不正です。" },
+          { status: 400 }
+        );
+      }
 
-    const data = await res.json();
+      const promptMessages = toGroqMessages(
+        messages as { role: string; content: string }[]
+      );
 
-    // 🔹 クイズモードのときは JSON をそのまま返す
-    if (mode === "quiz") {
-      const content = data.choices[0].message.content;
-      return NextResponse.json({ quiz: content });
+      if (promptMessages.length === 0) {
+        return NextResponse.json(
+          { error: "送信できるメッセージがありません。" },
+          { status: 400 }
+        );
+      }
+
+      const groq = await postGroqChatCompletions(promptMessages);
+
+      if (groq.ok && groq.content) {
+        return NextResponse.json({
+          reply: groq.content,
+          source: "groq",
+        });
+      }
+
+      console.error("Groq chat failure:", groq.status, groq.errorBody);
+
+      return NextResponse.json({
+        reply: CHAT_STATIC_REPLY,
+        source: "static",
+        degraded: true,
+        notice: NOTICE_CHAT_DEGRADED,
+      });
     }
 
-    // 🔹 通常チャット
-    return NextResponse.json({ reply: data.choices[0].message.content });
+    return NextResponse.json({ error: "不正な mode です。" }, { status: 400 });
   } catch (error) {
     console.error("API Error:", error);
     return NextResponse.json(

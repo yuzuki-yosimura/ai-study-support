@@ -14,3 +14,10 @@ model QuizLog {
   correct   Boolean
   createdAt DateTime @default(now())
 }
+
+model QuizQuestion {
+  id        Int     @id @default(autoincrement())
+  question  String
+  answer    String
+  category  String?
+}

@@ -2,17 +2,27 @@
   "name": "ai-study-support",
   "version": "1.0.0",
   "private": true,
+  "engines": {
+    "node": ">=18.17"
+  },
   "scripts": {
     "dev": "next dev",
-    "build": "next build",
-    "start": "next start"
+    "dev:docker": "next dev -H 0.0.0.0 -p 3000",
+    "build": "prisma migrate deploy && prisma db seed && next build",
+    "start": "next start",
+    "db:migrate": "prisma migrate deploy",
+    "db:generate": "prisma generate",
+    "db:seed": "npx tsx prisma/seed.ts",
+    "postinstall": "prisma generate"
+  },
+  "prisma": {
+    "seed": "npx tsx prisma/seed.ts"
   },
   "dependencies": {
     "@prisma/client": "^6.16.1",
     "@tailwindcss/postcss": "^4.1.11",
     "framer-motion": "^12.23.12",
     "next": "^14.2.31",
-    "openai": "^5.15.0",
     "prisma": "^6.16.1",
     "react": "18.2.0",
     "react-dom": "18.2.0"
@@ -23,6 +33,7 @@
     "autoprefixer": "^10.4.21",
     "postcss": "^8.5.6",
     "tailwindcss": "^4.1.11",
+    "tsx": "^4.19.2",
     "typescript": "5.9.2"
   }
 }
