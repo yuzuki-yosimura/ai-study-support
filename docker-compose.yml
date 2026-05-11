@@ -1,13 +1,33 @@
 services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: ai_study_support
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d ai_study_support"]
+      interval: 3s
+      timeout: 5s
+      retries: 10
+
   app:
     image: node:20-bookworm-slim
     working_dir: /app
     ports:
       - "3000:3000"
+    depends_on:
+      db:
+        condition: service_healthy
     env_file:
       - .env
     environment:
-      # コンテナ越しのファイル監視が不安な環境向け（macOS の Docker Desktop でも有効なことがある）
+      # コンテナ内からはサービス名 db で接続（.env の SQLite 用 URL は上書き）
+      DATABASE_URL: postgresql://postgres:postgres@db:5432/ai_study_support?schema=public
       WATCHPACK_POLLING: "true"
     volumes:
       - .:/app
@@ -22,3 +42,4 @@ services:
 
 volumes:
   node_modules:
+  postgres_data:
