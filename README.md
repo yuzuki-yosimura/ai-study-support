@@ -1,4 +1,4 @@
-# ai-study-support
+# ai-study-support — [https://ai-study-support.vercel.app](https://ai-study-support.vercel.app)
 
 中学レベルの英単語クイズと英語チャット。Groq で問題生成・会話し、回答は PostgreSQL に保存します。
 
