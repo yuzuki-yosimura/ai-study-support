@@ -1,67 +1,72 @@
 # ai-study-support
 
-中学レベルの英単語クイズと英語チャット。**Groq**（Chat Completions）を主に使い、失敗時は **DB に登録した固定問題**へフォールバックします。回答は **PostgreSQL** の `QuizLog` に保存します。
-
-**スタック**: Next.js 14（App Router）、Tailwind v4、Prisma、**PostgreSQL**、Groq（既定モデル `llama-3.1-8b-instant`）
-
-## ビルド（Vercel / `npm run build`）
-
-`build` は **`prisma migrate deploy` → `prisma db seed` → `next build`** の順です。ビルド時に **`DATABASE_URL`（Postgres の接続文字列）** が必要です。Neon 等では **`?sslmode=require`** が付いた URL をそのまま使うことが多いです。
-
-シードは **`QuizQuestion` を毎回作り直す**（`deleteMany` 後に投入）だけで、`QuizLog` は消しません。
-
-## 開発（Docker）
-
-前提: [Docker Desktop](https://www.docker.com/products/docker-desktop/) が起動していること（Compose v2）。
-
-1. ルートに `.env` を用意する（`cp .env.example .env`）。**必須は `GROQ_API_KEY`**。`GROQ_MODEL` は任意。
-2. **`docker compose up`** で **`db`（Postgres 16）と `app`（Next）** が立ち上がります。`app` には **`DATABASE_URL` が Compose 側で上書き**され、`db` サービスに接続します（`.env` に古い SQLite の URLがあっても Docker 内では Postgres を使います）。
-3. 初回は `app` 内で `npm install` → `db:migrate` → `db:seed` → `next dev`。ログに `Ready` が出たら [http://localhost:3000](http://localhost:3000) を開く。
-4. 止める: `Ctrl+C` または `docker compose down`（DB データはボリューム `postgres_data` に残ります）。
-
-ホストからだけ Postgres を触りたいときはポート **5432** が公開されています（`.env.example` の `localhost` の URL）。
-
-問題バンクを差し替えたあとは `app` コンテナ内で `npm run db:seed` を実行してください。
-
-## 旧 SQLite（`dev.db`）から PostgreSQL へデータ移行
-
-1. **移行先の Postgres** にマイグレが済んでいること（空でも、シード済みでも可）。
-2. 環境変数を付けて **1 回だけ**実行する。
-
-   ```bash
-   npm install
-   export DATABASE_URL="postgresql://..."   # 移行先（Neon やローカル Docker の db 等）
-   export SQLITE_SOURCE_PATH="./prisma/dev.db"   # 旧 SQLite ファイルのパス
-   npm run db:migrate-from-sqlite
-   ```
-
-3. **挙動**
-   - **`QuizLog`**: SQLite の全行を **そのまま追加**（`createdAt` も保持）。**スクリプトを二度実行すると履歴が二重**になるので、やり直す場合は先に Postgres 側で `QuizLog` を削除するなどしてください。
-   - **`QuizQuestion`**: `(question, answer)` が Postgres に **まだ無い行だけ**挿入（シードと重複する行はスキップ）。
-
-スクリプト本体: [`scripts/migrate-sqlite-to-pg.ts`](scripts/migrate-sqlite-to-pg.ts)（読み取りに **better-sqlite3** を使用）。
-
-## ホストで `npm run dev` する場合
-
-PostgreSQL が **`localhost:5432`** で動いている必要があります（例: `docker compose up -d db` だけ起動しておく）。`.env` の `DATABASE_URL` を `.env.example` の localhost 例に合わせます。
+中学レベルの英単語クイズと英語チャット。Groq で問題生成・会話し、回答は PostgreSQL に保存します。
 
 ## 使い方
 
-| 入力 | 内容 |
-|------|------|
-| `/quiz` | クイズ（Groq 優先・失敗時 DB）5 問 |
-| `/db` | クイズ（DB のみ）5 問 |
-| `/chat` | チャットに戻る |
+チャット画面の入力欄にコマンドを打ちます。
 
-Groq が使えないときはチャットは定型文＋画面上部の通知バーです。
 
-## ディレクトリの目安
+| コマンド    | 内容                                 |
+| ------- | ---------------------------------- |
+| `/quiz` | 英単語クイズ 5 問（Groq で出題。失敗時は DB の固定問題） |
+| `/db`   | 英単語クイズ 5 問（DB の問題のみ）               |
+| `/chat` | 通常の英語チャットに戻る                       |
 
-| パス | 役割 |
-|------|------|
-| `app/page.tsx` | UI・クイズセッション |
-| `app/api/chat/route.ts` | Groq / `quizFromDb` / フォールバック |
-| `lib/llm/groq.ts` | Groq クライアント |
-| `lib/quiz/fallback.ts` | クイズ JSON パース・DB 抽選 |
-| `app/api/log`, `quiz-history` | 回答保存・履歴 |
-| `prisma/` | スキーマ・マイグレーション・`seed.ts` |
+
+クイズ中は日本語で答えを入力します。5 問終了後に正答数が表示されます。
+
+Groq が使えないときは、チャットは定型文の応答になり、画面上部に通知が出ます。クイズは DB フォールバックで続行できます。
+
+## はじめに（リポジトリを pull したあと）
+
+1. [Groq Console](https://console.groq.com/keys) で API キーを発行する
+2. ルートに `.env` を用意する（`cp .env.example .env`）し、`**GROQ_API_KEY**` を設定する
+3. [Docker Desktop](https://www.docker.com/products/docker-desktop/) を起動し、リポジトリ直下で次を実行する
+
+```bash
+docker compose up
+```
+
+初回は依存関係のインストール・DB マイグレーション・シードのあと開発サーバーが立ち上がります。ログに `Ready` と出たら [http://localhost:3000](http://localhost:3000) を開きます。
+
+止めるときは `Ctrl+C`、または `docker compose down`（DB データはボリュームに残ります）。
+
+## アプリの構成
+
+```mermaid
+flowchart LR
+  UI["app/page.tsx\nチャット UI"]
+  ChatAPI["/api/chat"]
+  LogAPI["/api/log"]
+  HistoryAPI["/api/quiz-history"]
+  Groq["Groq API"]
+  PG[("PostgreSQL")]
+
+  UI --> ChatAPI
+  UI --> LogAPI
+  UI --> HistoryAPI
+  ChatAPI --> Groq
+  ChatAPI --> PG
+  LogAPI --> PG
+  HistoryAPI --> PG
+```
+
+
+
+
+| レイヤ | パス                              | 役割                                      |
+| --- | ------------------------------- | --------------------------------------- |
+| UI  | `app/page.tsx`                  | チャット・クイズの画面、`/quiz` `/db` `/chat` の切り替え |
+| API | `app/api/chat/route.ts`         | チャット・クイズ出題（Groq → 失敗時 DB）               |
+| API | `app/api/log/route.ts`          | クイズの回答を `QuizLog` に保存                   |
+| API | `app/api/quiz-history/route.ts` | 過去の出題履歴の取得                              |
+| LLM | `lib/llm/groq.ts`               | Groq Chat Completions クライアント            |
+| クイズ | `lib/quiz/fallback.ts`          | 応答 JSON のパース、DB からの問題抽選                 |
+| DB  | `lib/prisma.ts`                 | Prisma クライアント                           |
+| DB  | `prisma/schema.prisma`          | `QuizLog`（回答ログ）、`QuizQuestion`（固定問題バンク） |
+
+
+**スタック**: Next.js 14（App Router）、Tailwind CSS v4、Prisma、PostgreSQL、Groq（既定モデル `llama-3.1-8b-instant`）
+
+**Docker**: `docker-compose.yml` で Postgres 16 と Next 開発サーバーを起動。`app` コンテナ内の `DATABASE_URL` は Compose 側で Postgres に向けます。
